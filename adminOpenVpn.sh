@@ -44,14 +44,13 @@ show_menu() {
     echo -e "${GREEN}║  ${YELLOW}1.${NC} 📋 Lister tous les utilisateurs                   ${GREEN}║${NC}"
     echo -e "${GREEN}║  ${YELLOW}2.${NC} 👥 Voir les utilisateurs connectés                ${GREEN}║${NC}"
     echo -e "${GREEN}║  ${YELLOW}3.${NC} ➕ Ajouter un nouvel utilisateur                  ${GREEN}║${NC}"
-    echo -e "${GREEN}║  ${YELLOW}4.${NC} 🔒 Révoquer un utilisateur                        ${GREEN}║${NC}"
-    echo -e "${GREEN}║  ${YELLOW}5.${NC} 🗑️  Supprimer un utilisateur (complet)            ${GREEN}║${NC}"
-    echo -e "${GREEN}║  ${YELLOW}6.${NC} 📊 Statistiques du serveur VPN                    ${GREEN}║${NC}"
-    echo -e "${GREEN}║  ${YELLOW}7.${NC} 📄 Voir les logs OpenVPN                          ${GREEN}║${NC}"
-    echo -e "${GREEN}║  ${YELLOW}8.${NC} 🔄 Redémarrer OpenVPN                             ${GREEN}║${NC}"
-    echo -e "${GREEN}║  ${YELLOW}9.${NC} 📦 Exporter la configuration d'un utilisateur     ${GREEN}║${NC}"
-    echo -e "${GREEN}║  ${YELLOW}10.${NC} 🌐 Gérer les IPs fixes                           ${GREEN}║${NC}"
-    echo -e "${GREEN}║  ${YELLOW}11.${NC} 🔧 Backup & Restauration                         ${GREEN}║${NC}"
+    echo -e "${GREEN}║  ${YELLOW}4.${NC} 🗑️  Supprimer un utilisateur (complet)            ${GREEN}║${NC}"
+    echo -e "${GREEN}║  ${YELLOW}5.${NC} 📊 Statistiques du serveur VPN                    ${GREEN}║${NC}"
+    echo -e "${GREEN}║  ${YELLOW}6.${NC} 📄 Voir les logs OpenVPN                          ${GREEN}║${NC}"
+    echo -e "${GREEN}║  ${YELLOW}7.${NC} 🔄 Redémarrer OpenVPN                             ${GREEN}║${NC}"
+    echo -e "${GREEN}║  ${YELLOW}8.${NC} 📦 Exporter la configuration d'un utilisateur     ${GREEN}║${NC}"
+    echo -e "${GREEN}║  ${YELLOW}9.${NC} 🌐 Gérer les IPs fixes                           ${GREEN}║${NC}"
+    echo -e "${GREEN}║  ${YELLOW}10.${NC} 🔧 Backup & Restauration                         ${GREEN}║${NC}"
     echo -e "${GREEN}║  ${YELLOW}0.${NC} 🚪 Quitter                                        ${GREEN}║${NC}"
     echo -e "${GREEN}║                                                         ║${NC}"
     echo -e "${GREEN}╚═════════════════════════════════════════════════════════╝${NC}"
@@ -192,11 +191,57 @@ add_user() {
 
     FIXED_IP=""
     if [[ $USE_FIXED_IP =~ ^[Oo]$ ]]; then
+        # Afficher les IPs déjà utilisées
+        echo -e "${CYAN}IPs déjà attribuées:${NC}"
+        local has_fixed_ips=false
+        for ccd_file in $CCD_DIR/*; do
+            if [[ -f "$ccd_file" ]]; then
+                OTHER_CLIENT=$(basename $ccd_file)
+                OTHER_IP=$(grep "ifconfig-push" "$ccd_file" | awk '{print $2}')
+                echo -e "  ${YELLOW}$OTHER_CLIENT${NC} → $OTHER_IP"
+                has_fixed_ips=true
+            fi
+        done
+
+        if [[ "$has_fixed_ips" == false ]]; then
+            echo -e "  ${YELLOW}Aucune${NC}"
+        fi
+        echo ""
+
         read -p "Adresse IP (ex: 10.8.0.100): " FIXED_IP
-        # Validation basique
+
+        # Validation format
         if [[ ! $FIXED_IP =~ ^10\.8\.0\.[0-9]+$ ]]; then
-            echo -e "${YELLOW}⚠️  IP invalide, IP dynamique sera utilisée${NC}"
+            echo -e "${YELLOW}⚠️  IP invalide (format: 10.8.0.X), IP dynamique sera utilisée${NC}"
             FIXED_IP=""
+        else
+            # Vérifier si l'IP est déjà utilisée
+            local ip_already_used=false
+            for ccd_file in $CCD_DIR/*; do
+                if [[ -f "$ccd_file" ]]; then
+                    OTHER_CLIENT=$(basename $ccd_file)
+                    OTHER_IP=$(grep "ifconfig-push" "$ccd_file" | awk '{print $2}')
+                    if [[ "$OTHER_IP" == "$FIXED_IP" ]]; then
+                        echo -e "${RED}❌ Cette IP est déjà utilisée par '$OTHER_CLIENT'${NC}"
+                        echo -e "${YELLOW}⚠️  IP dynamique sera utilisée${NC}"
+                        FIXED_IP=""
+                        ip_already_used=true
+                        break
+                    fi
+                fi
+            done
+
+            # Vérifier les IPs réservées
+            if [[ -n "$FIXED_IP" ]]; then
+                IFS='.' read -r -a ip_parts <<< "$FIXED_IP"
+                last_octet=${ip_parts[3]}
+
+                if [[ $last_octet -eq 0 || $last_octet -eq 1 || $last_octet -eq 255 ]]; then
+                    echo -e "${RED}❌ IP réservée (.0, .1, .255 ne peuvent pas être utilisées)${NC}"
+                    echo -e "${YELLOW}⚠️  IP dynamique sera utilisée${NC}"
+                    FIXED_IP=""
+                fi
+            fi
         fi
     fi
 
@@ -273,115 +318,69 @@ EOF
     chmod 644 ${CLIENT_NAME}.tar.gz
 
     echo ""
-    echo -e "${GREEN}✅ Utilisateur '$CLIENT_NAME' créé avec succès !${NC}"
-    echo -e "${CYAN}📁 Fichiers dans: $CLIENT_DIR/$CLIENT_NAME/${NC}"
-    echo -e "${CYAN}📦 Archive: $CLIENT_DIR/${CLIENT_NAME}.tar.gz${NC}"
+    echo -e "${GREEN}✅ Utilisateur '$CLIENT_NAME' ajouté avec succès${NC}"
+    echo -e "${CYAN}📁 Fichier: ${CLIENT_NAME}.tar.gz${NC}"
     echo ""
 }
 
-# 4. Révoquer un utilisateur
-revoke_user() {
+# 4. Supprimer un utilisateur (révocation + suppression complète)
+delete_user() {
     print_header
-    echo -e "${RED}🔒 RÉVOQUER UN UTILISATEUR${NC}"
+    echo -e "${RED}🗑️  SUPPRIMER UN UTILISATEUR${NC}"
     echo -e "${BLUE}═══════════════════════════════════════════════════════════${NC}"
     echo ""
 
     # Lister les utilisateurs actifs
-    echo -e "${CYAN}Utilisateurs actifs:${NC}"
+    echo -e "${CYAN}Utilisateurs disponibles:${NC}"
     cd $EASYRSA_DIR
+
+    declare -a USERS
     local count=0
+
     for cert in pki/issued/*.crt; do
         if [[ -f "$cert" && "$cert" != *"server.crt"* ]]; then
             CLIENT=$(basename $cert .crt)
-            if ! grep -q "^R.*CN=$CLIENT" pki/index.txt 2>/dev/null; then
-                ((count++))
-                echo -e "  ${GREEN}$count.${NC} $CLIENT"
+            ((count++))
+            USERS[$count]=$CLIENT
+
+            # Vérifier si révoqué
+            if grep -q "^R.*CN=$CLIENT" pki/index.txt 2>/dev/null; then
+                echo -e "  ${RED}$count.${NC} $CLIENT ${YELLOW}(révoqué)${NC}"
+            else
+                echo -e "  ${GREEN}$count.${NC} $CLIENT ${GREEN}(actif)${NC}"
             fi
         fi
     done
 
     if [[ $count -eq 0 ]]; then
-        echo -e "${YELLOW}⚠️  Aucun utilisateur actif à révoquer${NC}"
+        echo -e "${YELLOW}⚠️  Aucun utilisateur à supprimer${NC}"
         return
     fi
 
     echo ""
-    read -p "Nom de l'utilisateur à révoquer: " CLIENT_NAME
+    read -p "Numéro de l'utilisateur à supprimer (0 pour annuler): " USER_NUM
 
-    if [[ -z "$CLIENT_NAME" ]]; then
-        echo -e "${RED}❌ Nom vide${NC}"
-        return
-    fi
-
-    # Vérifier si existe
-    if [[ ! -f "$EASYRSA_DIR/pki/issued/${CLIENT_NAME}.crt" ]]; then
-        echo -e "${RED}❌ L'utilisateur '$CLIENT_NAME' n'existe pas${NC}"
-        return
-    fi
-
-    # Vérifier si déjà révoqué
-    if grep -q "^R.*CN=$CLIENT_NAME" $EASYRSA_DIR/pki/index.txt 2>/dev/null; then
-        echo -e "${YELLOW}⚠️  L'utilisateur '$CLIENT_NAME' est déjà révoqué${NC}"
-        return
-    fi
-
-    echo ""
-    echo -e "${RED}⚠️  ATTENTION: Cette action va révoquer le certificat de '$CLIENT_NAME'${NC}"
-    echo -e "${YELLOW}   L'utilisateur ne pourra plus se connecter au VPN${NC}"
-    read -p "Confirmer la révocation ? (oui/N): " -r CONFIRM
-
-    if [[ ! $CONFIRM =~ ^[Oo][Uu][Ii]$ ]]; then
+    # Validation
+    if [[ -z "$USER_NUM" || "$USER_NUM" == "0" ]]; then
         echo -e "${BLUE}ℹ️  Opération annulée${NC}"
         return
     fi
 
-    cd $EASYRSA_DIR
-
-    echo -e "${YELLOW}🔒 Révocation en cours...${NC}"
-    ./easyrsa revoke $CLIENT_NAME
-
-    echo -e "${YELLOW}📝 Génération de la CRL...${NC}"
-    ./easyrsa gen-crl
-
-    cp pki/crl.pem $OPENVPN_DIR/
-    chmod 644 $OPENVPN_DIR/crl.pem
-
-    echo -e "${YELLOW}🔄 Redémarrage d'OpenVPN...${NC}"
-    systemctl restart openvpn@server.service
-
-    echo ""
-    echo -e "${GREEN}✅ Utilisateur '$CLIENT_NAME' révoqué avec succès${NC}"
-    echo -e "${YELLOW}ℹ️  Les fichiers n'ont PAS été supprimés (utilisez l'option 5 pour supprimer)${NC}"
-    echo ""
-}
-
-# 5. Supprimer complètement un utilisateur
-delete_user() {
-    print_header
-    echo -e "${RED}🗑️  SUPPRIMER COMPLÈTEMENT UN UTILISATEUR${NC}"
-    echo -e "${BLUE}═══════════════════════════════════════════════════════════${NC}"
-    echo ""
-
-    read -p "Nom de l'utilisateur à supprimer: " CLIENT_NAME
-
-    if [[ -z "$CLIENT_NAME" ]]; then
-        echo -e "${RED}❌ Nom vide${NC}"
+    if ! [[ "$USER_NUM" =~ ^[0-9]+$ ]] || [[ $USER_NUM -lt 1 ]] || [[ $USER_NUM -gt $count ]]; then
+        echo -e "${RED}❌ Numéro invalide${NC}"
         return
     fi
 
-    if [[ ! -f "$EASYRSA_DIR/pki/issued/${CLIENT_NAME}.crt" ]]; then
-        echo -e "${RED}❌ L'utilisateur '$CLIENT_NAME' n'existe pas${NC}"
-        return
-    fi
+    CLIENT_NAME=${USERS[$USER_NUM]}
 
     echo ""
     echo -e "${RED}⚠️  ATTENTION: Cette action va:${NC}"
-    echo -e "   ${YELLOW}1. Révoquer le certificat (si pas déjà fait)${NC}"
+    echo -e "   ${YELLOW}1. Révoquer le certificat de '$CLIENT_NAME' (si pas déjà fait)${NC}"
     echo -e "   ${YELLOW}2. Supprimer tous les fichiers de configuration${NC}"
     echo -e "   ${YELLOW}3. Supprimer l'IP fixe (si configurée)${NC}"
     echo -e "   ${RED}4. Cette action est IRRÉVERSIBLE${NC}"
     echo ""
-    read -p "Confirmer la suppression TOTALE de '$CLIENT_NAME' ? (SUPPRIMER/N): " -r CONFIRM
+    read -p "Confirmer la suppression de '$CLIENT_NAME' ? (SUPPRIMER/N): " -r CONFIRM
 
     if [[ $CONFIRM != "SUPPRIMER" ]]; then
         echo -e "${BLUE}ℹ️  Opération annulée${NC}"
@@ -424,8 +423,7 @@ delete_user() {
     echo -e "${GREEN}✅ Utilisateur '$CLIENT_NAME' supprimé complètement${NC}"
     echo ""
 }
-
-# 6. Statistiques
+# 5. Statistiques
 show_stats() {
     print_header
     echo -e "${BLUE}═══════════════════════════════════════════════════════════${NC}"
@@ -502,7 +500,7 @@ show_stats() {
     echo ""
 }
 
-# 7. Voir les logs
+# 6. Voir les logs
 show_logs() {
     print_header
     echo -e "${GREEN}📄 LOGS OPENVPN (50 dernières lignes)${NC}"
@@ -520,7 +518,7 @@ show_logs() {
     echo ""
 }
 
-# 8. Redémarrer OpenVPN
+# 7. Redémarrer OpenVPN
 restart_openvpn() {
     print_header
     echo -e "${YELLOW}🔄 REDÉMARRAGE D'OPENVPN${NC}"
@@ -549,7 +547,7 @@ restart_openvpn() {
     echo ""
 }
 
-# 9. Exporter la configuration
+# 8. Exporter la configuration
 export_config() {
     print_header
     echo -e "${GREEN}📦 EXPORTER LA CONFIGURATION D'UN UTILISATEUR${NC}"
@@ -583,7 +581,8 @@ export_config() {
     echo ""
 }
 
-# 10. Gérer les IPs fixes
+# 9. Gérer les IPs fixes
+# 9. Gérer les IPs fixes
 manage_fixed_ips() {
     print_header
     echo -e "${GREEN}🌐 GESTION DES IPs FIXES${NC}"
@@ -593,17 +592,19 @@ manage_fixed_ips() {
     echo -e "${CYAN}Utilisateurs avec IP fixe:${NC}"
     echo ""
 
-    local count=0
+    declare -a FIXED_IP_USERS
+    local fixed_count=0
     for ccd_file in $CCD_DIR/*; do
         if [[ -f "$ccd_file" ]]; then
             CLIENT=$(basename $ccd_file)
             FIXED_IP=$(grep "ifconfig-push" "$ccd_file" | awk '{print $2}')
-            ((count++))
-            echo -e "  ${GREEN}$count.${NC} $CLIENT → ${YELLOW}$FIXED_IP${NC}"
+            ((fixed_count++))
+            FIXED_IP_USERS[$fixed_count]=$CLIENT
+            echo -e "  ${GREEN}$fixed_count.${NC} $CLIENT → ${YELLOW}$FIXED_IP${NC}"
         fi
     done
 
-    if [[ $count -eq 0 ]]; then
+    if [[ $fixed_count -eq 0 ]]; then
         echo -e "${YELLOW}  Aucune IP fixe configurée${NC}"
     fi
 
@@ -620,13 +621,72 @@ manage_fixed_ips() {
     case $CHOICE in
         1)
             echo ""
-            read -p "Nom de l'utilisateur: " CLIENT_NAME
+            echo -e "${CYAN}Utilisateurs disponibles:${NC}"
+
+            declare -a ALL_USERS
+            local count=0
+            cd $EASYRSA_DIR
+
+            for cert in pki/issued/*.crt; do
+                if [[ -f "$cert" && "$cert" != *"server.crt"* ]]; then
+                    CLIENT=$(basename $cert .crt)
+
+                    # Vérifier si pas révoqué
+                    if ! grep -q "^R.*CN=$CLIENT" pki/index.txt 2>/dev/null; then
+                        ((count++))
+                        ALL_USERS[$count]=$CLIENT
+
+                        # Vérifier si a déjà une IP fixe
+                        if [[ -f "$CCD_DIR/$CLIENT" ]]; then
+                            CURRENT_IP=$(grep "ifconfig-push" "$CCD_DIR/$CLIENT" | awk '{print $2}')
+                            echo -e "  ${YELLOW}$count.${NC} $CLIENT ${CYAN}(a déjà: $CURRENT_IP)${NC}"
+                        else
+                            echo -e "  ${GREEN}$count.${NC} $CLIENT"
+                        fi
+                    fi
+                fi
+            done
+
+            if [[ $count -eq 0 ]]; then
+                echo -e "${YELLOW}⚠️  Aucun utilisateur actif${NC}"
+                return
+            fi
+
+            echo ""
+            read -p "Numéro de l'utilisateur (0 pour annuler): " USER_NUM
+
+            if [[ -z "$USER_NUM" || "$USER_NUM" == "0" ]]; then
+                echo -e "${BLUE}ℹ️  Opération annulée${NC}"
+                return
+            fi
+
+            if ! [[ "$USER_NUM" =~ ^[0-9]+$ ]] || [[ $USER_NUM -lt 1 ]] || [[ $USER_NUM -gt $count ]]; then
+                echo -e "${RED}❌ Numéro invalide${NC}"
+                return
+            fi
+
+            CLIENT_NAME=${ALL_USERS[$USER_NUM]}
+
             read -p "Adresse IP (ex: 10.8.0.100): " FIXED_IP
 
             if [[ ! $FIXED_IP =~ ^10\.8\.0\.[0-9]+$ ]]; then
-                echo -e "${RED}❌ IP invalide${NC}"
+                echo -e "${RED}❌ IP invalide (format: 10.8.0.X)${NC}"
                 return
             fi
+
+            # Vérifier si l'IP est déjà utilisée par un autre utilisateur
+            for ccd_file in $CCD_DIR/*; do
+                if [[ -f "$ccd_file" ]]; then
+                    OTHER_CLIENT=$(basename $ccd_file)
+                    if [[ "$OTHER_CLIENT" != "$CLIENT_NAME" ]]; then
+                        OTHER_IP=$(grep "ifconfig-push" "$ccd_file" | awk '{print $2}')
+                        if [[ "$OTHER_IP" == "$FIXED_IP" ]]; then
+                            echo -e "${RED}❌ Cette IP est déjà utilisée par '$OTHER_CLIENT'${NC}"
+                            return
+                        fi
+                    fi
+                fi
+            done
 
             IFS='.' read -r -a ip_parts <<< "$FIXED_IP"
             last_octet=${ip_parts[3]}
@@ -642,22 +702,48 @@ manage_fixed_ips() {
             echo -e "${YELLOW}⚠️  Redémarrez OpenVPN pour appliquer (option 8)${NC}"
             ;;
         2)
-            echo ""
-            read -p "Nom de l'utilisateur: " CLIENT_NAME
-
-            if [[ ! -f "$CCD_DIR/$CLIENT_NAME" ]]; then
-                echo -e "${RED}❌ Aucune IP fixe pour cet utilisateur${NC}"
+            if [[ $fixed_count -eq 0 ]]; then
+                echo -e "${YELLOW}⚠️  Aucune IP fixe à modifier${NC}"
                 return
             fi
 
+            echo ""
+            read -p "Numéro de l'utilisateur (0 pour annuler): " USER_NUM
+
+            if [[ -z "$USER_NUM" || "$USER_NUM" == "0" ]]; then
+                echo -e "${BLUE}ℹ️  Opération annulée${NC}"
+                return
+            fi
+
+            if ! [[ "$USER_NUM" =~ ^[0-9]+$ ]] || [[ $USER_NUM -lt 1 ]] || [[ $USER_NUM -gt $fixed_count ]]; then
+                echo -e "${RED}❌ Numéro invalide${NC}"
+                return
+            fi
+
+            CLIENT_NAME=${FIXED_IP_USERS[$USER_NUM]}
+
             OLD_IP=$(grep "ifconfig-push" "$CCD_DIR/$CLIENT_NAME" | awk '{print $2}')
-            echo -e "${CYAN}IP actuelle: $OLD_IP${NC}"
+            echo -e "${CYAN}IP actuelle de $CLIENT_NAME: $OLD_IP${NC}"
             read -p "Nouvelle IP (ex: 10.8.0.100): " FIXED_IP
 
             if [[ ! $FIXED_IP =~ ^10\.8\.0\.[0-9]+$ ]]; then
-                echo -e "${RED}❌ IP invalide${NC}"
+                echo -e "${RED}❌ IP invalide (format: 10.8.0.X)${NC}"
                 return
             fi
+
+            # Vérifier si l'IP est déjà utilisée par un autre utilisateur
+            for ccd_file in $CCD_DIR/*; do
+                if [[ -f "$ccd_file" ]]; then
+                    OTHER_CLIENT=$(basename $ccd_file)
+                    if [[ "$OTHER_CLIENT" != "$CLIENT_NAME" ]]; then
+                        OTHER_IP=$(grep "ifconfig-push" "$ccd_file" | awk '{print $2}')
+                        if [[ "$OTHER_IP" == "$FIXED_IP" ]]; then
+                            echo -e "${RED}❌ Cette IP est déjà utilisée par '$OTHER_CLIENT'${NC}"
+                            return
+                        fi
+                    fi
+                fi
+            done
 
             IFS='.' read -r -a ip_parts <<< "$FIXED_IP"
             last_octet=${ip_parts[3]}
@@ -669,17 +755,29 @@ manage_fixed_ips() {
 
             echo "ifconfig-push $FIXED_IP $peer_ip" > $CCD_DIR/$CLIENT_NAME
 
-            echo -e "${GREEN}✅ IP modifiée: $OLD_IP → $FIXED_IP${NC}"
+            echo -e "${GREEN}✅ IP modifiée pour $CLIENT_NAME: $OLD_IP → $FIXED_IP${NC}"
             echo -e "${YELLOW}⚠️  Redémarrez OpenVPN pour appliquer (option 8)${NC}"
             ;;
         3)
-            echo ""
-            read -p "Nom de l'utilisateur: " CLIENT_NAME
-
-            if [[ ! -f "$CCD_DIR/$CLIENT_NAME" ]]; then
-                echo -e "${RED}❌ Aucune IP fixe pour cet utilisateur${NC}"
+            if [[ $fixed_count -eq 0 ]]; then
+                echo -e "${YELLOW}⚠️  Aucune IP fixe à supprimer${NC}"
                 return
             fi
+
+            echo ""
+            read -p "Numéro de l'utilisateur (0 pour annuler): " USER_NUM
+
+            if [[ -z "$USER_NUM" || "$USER_NUM" == "0" ]]; then
+                echo -e "${BLUE}ℹ️  Opération annulée${NC}"
+                return
+            fi
+
+            if ! [[ "$USER_NUM" =~ ^[0-9]+$ ]] || [[ $USER_NUM -lt 1 ]] || [[ $USER_NUM -gt $fixed_count ]]; then
+                echo -e "${RED}❌ Numéro invalide${NC}"
+                return
+            fi
+
+            CLIENT_NAME=${FIXED_IP_USERS[$USER_NUM]}
 
             OLD_IP=$(grep "ifconfig-push" "$CCD_DIR/$CLIENT_NAME" | awk '{print $2}')
             rm -f $CCD_DIR/$CLIENT_NAME
@@ -697,8 +795,7 @@ manage_fixed_ips() {
 
     echo ""
 }
-
-# 11. Backup & Restauration
+# 10. Backup & Restauration
 backup_restore() {
     print_header
     echo -e "${GREEN}🔧 BACKUP & RESTAURATION${NC}"
@@ -833,35 +930,32 @@ main() {
                 add_user
                 pause
                 ;;
+
             4)
-                revoke_user
-                pause
-                ;;
-            5)
                 delete_user
                 pause
                 ;;
-            6)
+            5)
                 show_stats
                 pause
                 ;;
-            7)
+            6)
                 show_logs
                 pause
                 ;;
-            8)
+            7)
                 restart_openvpn
                 pause
                 ;;
-            9)
+            8)
                 export_config
                 pause
                 ;;
-            10)
+            9)
                 manage_fixed_ips
                 pause
                 ;;
-            11)
+            10)
                 backup_restore
                 pause
                 ;;

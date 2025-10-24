@@ -5,12 +5,13 @@
 # Serveur: geomadagascar.servermada.com
 # Mode: Zero Trust + Ban Progressif
 # Filtres: Vérifiés et compatibles
+# LOGS: Vérifiés et existants
 # ============================================
 
 set -e
 
-echo "🔥 CONFIGURATION FAIL2BAN - VERSION FINALE"
-echo "==========================================="
+echo "🔥 CONFIGURATION FAIL2BAN - VERSION FINALE (LOGS VÉRIFIÉS)"
+echo "=========================================================="
 echo ""
 
 # Vérifier root
@@ -55,37 +56,46 @@ ignoreip = 127.0.0.1/8 ::1
 # ============================================
 # BAN PROGRESSIF (INCRÉMENTAL)
 # ============================================
+# Le ban augmente à chaque récidive :
+# 1er ban = 1h, 2ème = 2h, 3ème = 4h, 4ème = 8h, etc.
+# Maximum : 5 semaines
+# Reset après 1 semaine d'inactivité
 bantime.increment = true
-bantime = 3600                           # Ban initial: 1 heure
-bantime.multipliers = 1 2 4 8 16 32 64  # Progression: 1h→2h→4h→8h...
-bantime.maxtime = 5w                    # Maximum: 5 semaines
-bantime.rndtime = 1w                    # Reset après 1 semaine d'inactivité
-bantime.factor = 1                       # Formule simple
+bantime = 3600
+bantime.multipliers = 1 2 4 8 16 32 64
+bantime.maxtime = 5w
+bantime.rndtime = 1w
+bantime.factor = 1
 
 # ============================================
 # PARAMÈTRES GÉNÉRAUX
 # ============================================
-findtime = 600                           # Fenêtre de détection: 10 minutes
-maxretry = 5                             # Tentatives par défaut
-banaction = ufw                          # Utiliser UFW
-banaction_allports = ufw                 # UFW pour tous les ports
-action = %(action_)s                     # Pas de notification email
+# Fenêtre de détection : 10 minutes
+# Tentatives par défaut : 5
+# Action : Utiliser UFW pour le bannissement
+findtime = 600
+maxretry = 5
+banaction = ufw
+banaction_allports = ufw
+action = %(action_)s
 
 # ============================================
 # 🔴 PRIORITÉ HAUTE - ACCÈS ROOT/ADMIN
 # ============================================
+# Services critiques nécessitant une protection maximale
+# SSH, Webmin, JupyterLab : accès administrateur
+# Seulement 3 tentatives autorisées
+# Ban initial plus long (1-2 heures)
 
-# SSH (Port 49521) - CRITIQUE
 [sshd]
 enabled = true
 port = 49521
 filter = sshd
 logpath = /var/log/auth.log
-maxretry = 3                             # Seulement 3 tentatives
+maxretry = 3
 findtime = 600
-bantime = 7200                           # Ban initial: 2 heures
+bantime = 7200
 
-# Webmin (Port 10001) - INTERFACE ADMIN
 [webmin-auth]
 enabled = true
 port = 10001
@@ -93,9 +103,8 @@ filter = webmin-auth
 logpath = /var/log/auth.log
 maxretry = 3
 findtime = 600
-bantime = 7200                           # Ban initial: 2 heures
+bantime = 7200
 
-# JupyterLab (Port 8889) - ENVIRONNEMENT DEV
 [jupyter-auth]
 enabled = true
 port = 8889
@@ -103,23 +112,18 @@ filter = jupyter-auth
 logpath = /var/log/syslog
 maxretry = 3
 findtime = 600
-bantime = 3600                           # Ban initial: 1 heure
+bantime = 3600
 
 # ============================================
 # 🟠 PRIORITÉ MOYENNE - SERVICES CRITIQUES
 # ============================================
+# Services essentiels : FTP, mail (SMTP/IMAP/POP3)
+# Protection contre brute-force
+# 3 tentatives selon le service
+# Ban initial : 1 heure
+#
+# NOTE: MySQL/MariaDB désactivé (pas de logs trouvés)
 
-# MariaDB/MySQL (Port 3306)
-[mysqld-auth]
-enabled = true
-port = 3306
-filter = mysqld-auth
-logpath = /var/log/mysql/error.log
-maxretry = 5
-findtime = 600
-bantime = 3600
-
-# ProFTPD (Port 21)
 [proftpd]
 enabled = true
 port = ftp,ftp-data,ftps,ftps-data
@@ -129,7 +133,6 @@ maxretry = 3
 findtime = 600
 bantime = 3600
 
-# Dovecot - IMAP/POP3 (Ports 110, 143, 993, 995)
 [dovecot]
 enabled = true
 port = pop3,pop3s,imap,imaps
@@ -139,7 +142,6 @@ maxretry = 3
 findtime = 600
 bantime = 3600
 
-# Postfix - SMTP (Ports 25, 465, 587)
 [postfix]
 enabled = true
 port = smtp,465,submission
@@ -152,8 +154,17 @@ bantime = 3600
 # ============================================
 # 🟡 PRIORITÉ BASSE - APACHE/WEB
 # ============================================
+# Protection du serveur web Apache
+# Détection des attaques courantes :
+# - Authentification échouée (401/403)
+# - Bots malveillants (Nikto, sqlmap)
+# - Scripts malveillants (.php, .asp, .exe)
+# - Overflows / DDoS (>100 req/min)
+# - Shellshock (exploitation Bash)
+# - Fake GoogleBot
+# - Tentatives sur /admin, /wp-admin
+# - Crawlers agressifs
 
-# Apache - Authentification (codes 401/403)
 [apache-auth]
 enabled = true
 port = http,https
@@ -163,17 +174,15 @@ maxretry = 5
 findtime = 600
 bantime = 3600
 
-# Apache - Bots Malveillants (Nikto, sqlmap, etc.)
 [apache-badbots]
 enabled = true
 port = http,https
 filter = apache-badbots
 logpath = /var/log/apache2/access.log
-maxretry = 2                             # Tolérance zéro
-findtime = 86400                         # Sur 24 heures
-bantime = 86400                          # Ban 24 heures
+maxretry = 2
+findtime = 86400
+bantime = 86400
 
-# Apache - Scripts Malveillants (.php, .asp, .exe)
 [apache-noscript]
 enabled = true
 port = http,https
@@ -183,27 +192,24 @@ maxretry = 3
 findtime = 300
 bantime = 3600
 
-# Apache - Overflows / Anti-DDoS (>100 req/min)
 [apache-overflows]
 enabled = true
 port = http,https
 filter = apache-overflows
 logpath = /var/log/apache2/access.log
-maxretry = 100                           # 100 requêtes
-findtime = 60                            # En 1 minute
-bantime = 600                            # Ban 10 minutes
+maxretry = 100
+findtime = 60
+bantime = 600
 
-# Apache - Shellshock (exploitation Bash)
 [apache-shellshock]
 enabled = true
 port = http,https
 filter = apache-shellshock
 logpath = /var/log/apache2/access.log
-maxretry = 1                             # UNE SEULE tentative
+maxretry = 1
 findtime = 300
-bantime = 86400                          # Ban 24 heures
+bantime = 86400
 
-# Apache - Fake GoogleBot
 [apache-fakegooglebot]
 enabled = true
 port = http,https
@@ -213,7 +219,6 @@ maxretry = 1
 findtime = 86400
 bantime = 86400
 
-# Apache - Pass (tentatives sur /admin, /wp-admin, etc.)
 [apache-pass]
 enabled = true
 port = http,https
@@ -223,7 +228,6 @@ maxretry = 3
 findtime = 600
 bantime = 3600
 
-# Apache - BotSearch (crawlers agressifs)
 [apache-botsearch]
 enabled = true
 port = http,https
@@ -236,17 +240,21 @@ bantime = 3600
 # ============================================
 # ⚡ RÉCIDIVE - MEGA-BAN POUR RÉCIDIVISTES
 # ============================================
+# Si une IP est bannie 3 fois en 24h
+# Ban automatique de 1 semaine sur TOUS les ports
+# Protection ultime contre les attaquants persistants
+
 [recidive]
 enabled = true
 filter = recidive
 logpath = /var/log/fail2ban.log
 action = %(banaction_allports)s
-bantime = 604800                         # 1 semaine (7 jours)
-findtime = 86400                         # Si re-ban dans les 24h
-maxretry = 3                             # 3 bans différents = mega-ban
+bantime = 604800
+findtime = 86400
+maxretry = 3
 EOFCONFIG
 
-echo "   ✅ jail.local créé avec 16 jails actives"
+echo "   ✅ jail.local créé avec 15 jails actives (MySQL désactivé)"
 
 # ============================================
 # ÉTAPE 3 : VÉRIFICATION LOG FILES
@@ -254,12 +262,29 @@ echo "   ✅ jail.local créé avec 16 jails actives"
 echo ""
 echo "🔍 Étape 3/7 : Vérification des fichiers de logs..."
 
+# Liste des logs à vérifier
+declare -A logs=(
+    ["SSH"]="/var/log/auth.log"
+    ["Webmin"]="/var/log/auth.log"
+    ["JupyterLab"]="/var/log/syslog"
+    ["ProFTPD"]="/var/log/proftpd/proftpd.log"
+    ["Mail (Dovecot/Postfix)"]="/var/log/mail.log"
+    ["Apache"]="/var/log/apache2/access.log"
+    ["Fail2Ban"]="/var/log/fail2ban.log"
+)
 
-# Vérifier PostgreSQL log (si installé)
-if [ -d /var/log/postgresql ]; then
-    echo "   ✅ PostgreSQL logs trouvés"
+for service in "${!logs[@]}"; do
+    if [ -f "${logs[$service]}" ]; then
+        echo "   ✅ $service: ${logs[$service]}"
+    else
+        echo "   ❌ $service: ${logs[$service]} MANQUANT"
+    fi
+done
+
+if [ -d /var/log/mysql ] || [ -d /var/log/mariadb ]; then
+    echo "   ⚠️  MySQL/MariaDB détecté mais logs non configurés (jail désactivée)"
 else
-    echo "   ⚠️  PostgreSQL logs non trouvés (normal si pas PostgreSQL)"
+    echo "   ℹ️  MySQL/MariaDB non installé (normal)"
 fi
 
 echo "   ✅ Vérification terminée"
@@ -271,10 +296,12 @@ echo ""
 echo "✅ Étape 4/7 : Test de la syntaxe..."
 
 if fail2ban-client -t 2>&1 | tail -1 | grep -q "OK"; then
-    echo "   ✅ Syntaxe correcte"
+    echo "   ✅ Syntaxe correcte - Configuration valide !"
 else
-    echo "   ⚠️  Affichage des détails:"
+    echo "   ⚠️  Détails du test:"
     fail2ban-client -t 2>&1 | tail -20
+    echo ""
+    echo "   ⚠️  Vérification si c'est juste un avertissement..."
 fi
 
 # ============================================
@@ -287,10 +314,10 @@ systemctl restart fail2ban
 sleep 3
 
 if systemctl is-active --quiet fail2ban; then
-    echo "   ✅ Fail2Ban actif"
+    echo "   ✅ Fail2Ban actif et opérationnel"
 else
-    echo "   ❌ Erreur de démarrage"
-    journalctl -u fail2ban -n 20 --no-pager
+    echo "   ❌ Erreur de démarrage - Vérification des logs..."
+    journalctl -u fail2ban -n 30 --no-pager
     exit 1
 fi
 
@@ -299,6 +326,9 @@ fi
 # ============================================
 echo ""
 echo "🛠️  Étape 6/7 : Création des scripts utiles..."
+
+# Créer le dossier s'il n'existe pas
+mkdir -p /root/script_admin
 
 # Script de monitoring
 cat > /root/script_admin/fail2ban-monitor.sh << 'EOFMON'
@@ -380,19 +410,19 @@ echo ""
 
 echo "🔝 TOP 10 IPs LES PLUS BANNIES"
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-grep "Ban " /var/log/fail2ban.log | awk '{print $NF}' | sort | uniq -c | sort -rn | head -10
+grep "Ban " /var/log/fail2ban.log 2>/dev/null | awk '{print $NF}' | sort | uniq -c | sort -rn | head -10
 
 echo ""
 echo "🎯 BANS PAR JAIL"
 echo "━━━━━━━━━━━━━━━"
-grep "Ban " /var/log/fail2ban.log | grep -oP '\[\K[^\]]+' | sort | uniq -c | sort -rn
+grep "Ban " /var/log/fail2ban.log 2>/dev/null | grep -oP '\[\K[^\]]+' | sort | uniq -c | sort -rn
 
 echo ""
 echo "📈 BANS PAR JOUR (7 derniers jours)"
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 for i in {0..6}; do
     date=$(date -d "$i days ago" +%Y-%m-%d)
-    count=$(grep "Ban " /var/log/fail2ban.log | grep "$date" | wc -l)
+    count=$(grep "Ban " /var/log/fail2ban.log 2>/dev/null | grep "$date" | wc -l)
     echo "  $date: $count bans"
 done
 EOFSTATS
@@ -425,11 +455,11 @@ echo "   • sshd (49521)           - 3 tentatives → 2h"
 echo "   • webmin-auth (10001)    - 3 tentatives → 2h"
 echo "   • jupyter-auth (8889)    - 3 tentatives → 1h"
 echo ""
-echo "🟠 PRIORITÉ MOYENNE (4 jails):"
-echo "   • mysqld-auth (3306)     - 5 tentatives → 1h"
+echo "🟠 PRIORITÉ MOYENNE (3 jails):"
 echo "   • proftpd (21)           - 3 tentatives → 1h"
 echo "   • dovecot (IMAP/POP3)    - 3 tentatives → 1h"
 echo "   • postfix (SMTP)         - 3 tentatives → 1h"
+echo "   ⚠️  mysqld-auth          - DÉSACTIVÉ (pas de logs)"
 echo ""
 echo "🟡 PRIORITÉ BASSE (8 jails):"
 echo "   • apache-auth            - 5 tentatives → 1h"
@@ -465,4 +495,7 @@ echo "⚠️  IMPORTANT:"
 echo "   • Gardez un accès console de secours !"
 echo "   • Même VOS IPs peuvent être bannies"
 echo "   • Testez avant de vous déconnecter"
+echo ""
+echo "💡 NOTE: MySQL/MariaDB jail désactivée (logs non trouvés)"
+echo "   Si vous installez MySQL plus tard, réactivez-la dans jail.local"
 echo ""
