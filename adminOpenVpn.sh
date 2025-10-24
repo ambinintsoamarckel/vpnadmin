@@ -159,6 +159,73 @@ show_connected_users() {
     echo ""
 }
 
+# Fonction pour vérifier si une IP est valide et disponible
+check_ip_validity() {
+    local requested_ip=$1
+    local client_name=$2  # Pour exclure lors de la modification
+
+    # Extraire le dernier octet
+    IFS='.' read -r -a ip_parts <<< "$requested_ip"
+    local last_octet=${ip_parts[3]}
+
+    # Vérifier les IPs réservées
+    if [[ $last_octet -eq 0 || $last_octet -eq 1 || $last_octet -eq 2 || $last_octet -eq 255 ]]; then
+        echo "RESERVED"
+        return 1
+    fi
+
+    # Calculer le peer IP (pour le /30)
+    local peer_octet
+    if [[ $((last_octet % 2)) -eq 0 ]]; then
+        # IP paire → peer est +1
+        peer_octet=$((last_octet + 1))
+    else
+        # IP impaire → peer est -1
+        peer_octet=$((last_octet - 1))
+    fi
+
+    local peer_ip="${ip_parts[0]}.${ip_parts[1]}.${ip_parts[2]}.$peer_octet"
+
+    # Vérifier si l'IP ou son peer sont déjà utilisés
+    for ccd_file in $CCD_DIR/*; do
+        if [[ -f "$ccd_file" ]]; then
+            local other_client=$(basename "$ccd_file")
+
+            # Ignorer le client actuel (pour modification)
+            if [[ -n "$client_name" && "$other_client" == "$client_name" ]]; then
+                continue
+            fi
+
+            local other_ip=$(grep "ifconfig-push" "$ccd_file" | awk '{print $2}')
+            local other_peer=$(grep "ifconfig-push" "$ccd_file" | awk '{print $3}')
+
+            # Vérifier collision avec l'IP demandée ou son peer
+            if [[ "$other_ip" == "$requested_ip" ]]; then
+                echo "USED_BY:$other_client:CLIENT"
+                return 1
+            fi
+
+            if [[ "$other_peer" == "$requested_ip" ]]; then
+                echo "USED_BY:$other_client:PEER"
+                return 1
+            fi
+
+            # Vérifier collision inverse (notre peer avec leur IP)
+            if [[ "$other_ip" == "$peer_ip" ]]; then
+                echo "PEER_CONFLICT:$other_client"
+                return 1
+            fi
+
+            if [[ "$other_peer" == "$peer_ip" ]]; then
+                echo "PEER_CONFLICT:$other_client"
+                return 1
+            fi
+        fi
+    done
+
+    echo "OK:$peer_ip"
+    return 0
+}
 # 3. Ajouter un utilisateur
 add_user() {
     print_header
@@ -191,14 +258,15 @@ add_user() {
 
     FIXED_IP=""
     if [[ $USE_FIXED_IP =~ ^[Oo]$ ]]; then
-        # Afficher les IPs déjà utilisées
-        echo -e "${CYAN}IPs déjà attribuées:${NC}"
+        # Afficher les IPs déjà utilisées avec leurs plages /30
+        echo -e "${CYAN}IPs fixes actuellement utilisées (avec leur peer):${NC}"
         local has_fixed_ips=false
         for ccd_file in $CCD_DIR/*; do
             if [[ -f "$ccd_file" ]]; then
-                OTHER_CLIENT=$(basename $ccd_file)
+                OTHER_CLIENT=$(basename "$ccd_file")
                 OTHER_IP=$(grep "ifconfig-push" "$ccd_file" | awk '{print $2}')
-                echo -e "  ${YELLOW}$OTHER_CLIENT${NC} → $OTHER_IP"
+                OTHER_PEER=$(grep "ifconfig-push" "$ccd_file" | awk '{print $3}')
+                echo -e "  ${YELLOW}$OTHER_CLIENT${NC} → $OTHER_IP (peer: $OTHER_PEER)"
                 has_fixed_ips=true
             fi
         done
@@ -206,43 +274,65 @@ add_user() {
         if [[ "$has_fixed_ips" == false ]]; then
             echo -e "  ${YELLOW}Aucune${NC}"
         fi
+
+        echo ""
+        echo -e "${CYAN}💡 Règles pour les IPs fixes:${NC}"
+        echo -e "  ${YELLOW}•${NC} Utilisez des paires d'IPs (ex: .4/.5, .8/.9, .12/.13, .16/.17...)"
+        echo -e "  ${YELLOW}•${NC} Évitez .0, .1, .2, .255"
+        echo -e "  ${YELLOW}•${NC} Suggestions libres: .4, .8, .12, .16, .20, .24..."
         echo ""
 
-        read -p "Adresse IP (ex: 10.8.0.100): " FIXED_IP
+        while true; do
+            read -p "Adresse IP (ex: 10.8.0.4): " FIXED_IP
 
-        # Validation format
-        if [[ ! $FIXED_IP =~ ^10\.8\.0\.[0-9]+$ ]]; then
-            echo -e "${YELLOW}⚠️  IP invalide (format: 10.8.0.X), IP dynamique sera utilisée${NC}"
-            FIXED_IP=""
-        else
-            # Vérifier si l'IP est déjà utilisée
-            local ip_already_used=false
-            for ccd_file in $CCD_DIR/*; do
-                if [[ -f "$ccd_file" ]]; then
-                    OTHER_CLIENT=$(basename $ccd_file)
-                    OTHER_IP=$(grep "ifconfig-push" "$ccd_file" | awk '{print $2}')
-                    if [[ "$OTHER_IP" == "$FIXED_IP" ]]; then
-                        echo -e "${RED}❌ Cette IP est déjà utilisée par '$OTHER_CLIENT'${NC}"
-                        echo -e "${YELLOW}⚠️  IP dynamique sera utilisée${NC}"
-                        FIXED_IP=""
-                        ip_already_used=true
-                        break
-                    fi
-                fi
-            done
-
-            # Vérifier les IPs réservées
-            if [[ -n "$FIXED_IP" ]]; then
-                IFS='.' read -r -a ip_parts <<< "$FIXED_IP"
-                last_octet=${ip_parts[3]}
-
-                if [[ $last_octet -eq 0 || $last_octet -eq 1 || $last_octet -eq 255 ]]; then
-                    echo -e "${RED}❌ IP réservée (.0, .1, .255 ne peuvent pas être utilisées)${NC}"
-                    echo -e "${YELLOW}⚠️  IP dynamique sera utilisée${NC}"
+            # Validation format
+            if [[ ! $FIXED_IP =~ ^10\.8\.0\.[0-9]+$ ]]; then
+                echo -e "${RED}❌ Format invalide (attendu: 10.8.0.X)${NC}"
+                read -p "Réessayer ? (o/N): " -n 1 -r RETRY
+                echo ""
+                if [[ ! $RETRY =~ ^[Oo]$ ]]; then
                     FIXED_IP=""
+                    break
                 fi
+                continue
             fi
-        fi
+
+            # Vérifier la validité
+            result=$(check_ip_validity "$FIXED_IP" "")
+            status=$(echo "$result" | cut -d':' -f1)
+
+            case $status in
+                "RESERVED")
+                    echo -e "${RED}❌ IP réservée (.0, .1, .2, .255 ne peuvent pas être utilisées)${NC}"
+                    ;;
+                "USED_BY")
+                    other_client=$(echo "$result" | cut -d':' -f2)
+                    usage_type=$(echo "$result" | cut -d':' -f3)
+                    if [[ "$usage_type" == "CLIENT" ]]; then
+                        echo -e "${RED}❌ Cette IP est déjà utilisée par '$other_client'${NC}"
+                    else
+                        echo -e "${RED}❌ Cette IP est le peer de '$other_client'${NC}"
+                    fi
+                    ;;
+                "PEER_CONFLICT")
+                    other_client=$(echo "$result" | cut -d':' -f2)
+                    echo -e "${RED}❌ Le peer de cette IP (.$(echo $FIXED_IP | cut -d'.' -f4)) est déjà utilisé par '$other_client'${NC}"
+                    echo -e "${YELLOW}   Les IPs doivent être en paires /30 non chevauchantes${NC}"
+                    ;;
+                "OK")
+                    peer_ip=$(echo "$result" | cut -d':' -f2)
+                    echo -e "${GREEN}✅ IP valide: $FIXED_IP (peer: $peer_ip)${NC}"
+                    break
+                    ;;
+            esac
+
+            read -p "Réessayer ? (o/N): " -n 1 -r RETRY
+            echo ""
+            if [[ ! $RETRY =~ ^[Oo]$ ]]; then
+                FIXED_IP=""
+                break
+            fi
+        done
     fi
 
     echo ""
@@ -300,16 +390,11 @@ EOF
 
     # Configurer IP fixe si demandée
     if [[ -n "$FIXED_IP" ]]; then
-        IFS='.' read -r -a ip_parts <<< "$FIXED_IP"
-        last_octet=${ip_parts[3]}
-        peer_octet=$((last_octet - 1))
-        if [[ $peer_octet -lt 1 ]]; then
-            peer_octet=$((last_octet + 1))
-        fi
-        peer_ip="${ip_parts[0]}.${ip_parts[1]}.${ip_parts[2]}.$peer_octet"
+        result=$(check_ip_validity "$FIXED_IP" "")
+        peer_ip=$(echo "$result" | cut -d':' -f2)
 
         echo "ifconfig-push $FIXED_IP $peer_ip" > $CCD_DIR/$CLIENT_NAME
-        echo -e "${GREEN}✅ IP fixe configurée: $FIXED_IP${NC}"
+        echo -e "${GREEN}✅ IP fixe configurée: $FIXED_IP (peer: $peer_ip)${NC}"
     fi
 
     # Créer l'archive
@@ -318,8 +403,13 @@ EOF
     chmod 644 ${CLIENT_NAME}.tar.gz
 
     echo ""
-    echo -e "${GREEN}✅ Utilisateur '$CLIENT_NAME' ajouté avec succès${NC}"
-    echo -e "${CYAN}📁 Fichier: ${CLIENT_NAME}.tar.gz${NC}"
+    echo -e "${GREEN}✅ Utilisateur '$CLIENT_NAME' créé avec succès !${NC}"
+    echo -e "${CYAN}📁 Fichiers dans: $CLIENT_DIR/$CLIENT_NAME/${NC}"
+    echo -e "${CYAN}📦 Archive: $CLIENT_DIR/${CLIENT_NAME}.tar.gz${NC}"
+
+    if [[ -n "$FIXED_IP" ]]; then
+        echo -e "${CYAN}🌐 IP fixe: $FIXED_IP (peer: $peer_ip)${NC}"
+    fi
     echo ""
 }
 
@@ -582,7 +672,6 @@ export_config() {
 }
 
 # 9. Gérer les IPs fixes
-# 9. Gérer les IPs fixes
 manage_fixed_ips() {
     print_header
     echo -e "${GREEN}🌐 GESTION DES IPs FIXES${NC}"
@@ -598,9 +687,10 @@ manage_fixed_ips() {
         if [[ -f "$ccd_file" ]]; then
             CLIENT=$(basename $ccd_file)
             FIXED_IP=$(grep "ifconfig-push" "$ccd_file" | awk '{print $2}')
+            PEER_IP=$(grep "ifconfig-push" "$ccd_file" | awk '{print $3}')
             ((fixed_count++))
             FIXED_IP_USERS[$fixed_count]=$CLIENT
-            echo -e "  ${GREEN}$fixed_count.${NC} $CLIENT → ${YELLOW}$FIXED_IP${NC}"
+            echo -e "  ${GREEN}$fixed_count.${NC} $CLIENT → ${YELLOW}$FIXED_IP${NC} (peer: $PEER_IP)"
         fi
     done
 
@@ -639,7 +729,8 @@ manage_fixed_ips() {
                         # Vérifier si a déjà une IP fixe
                         if [[ -f "$CCD_DIR/$CLIENT" ]]; then
                             CURRENT_IP=$(grep "ifconfig-push" "$CCD_DIR/$CLIENT" | awk '{print $2}')
-                            echo -e "  ${YELLOW}$count.${NC} $CLIENT ${CYAN}(a déjà: $CURRENT_IP)${NC}"
+                            CURRENT_PEER=$(grep "ifconfig-push" "$CCD_DIR/$CLIENT" | awk '{print $3}')
+                            echo -e "  ${YELLOW}$count.${NC} $CLIENT ${CYAN}(a déjà: $CURRENT_IP / $CURRENT_PEER)${NC}"
                         else
                             echo -e "  ${GREEN}$count.${NC} $CLIENT"
                         fi
@@ -667,39 +758,61 @@ manage_fixed_ips() {
 
             CLIENT_NAME=${ALL_USERS[$USER_NUM]}
 
-            read -p "Adresse IP (ex: 10.8.0.100): " FIXED_IP
+            echo ""
+            echo -e "${CYAN}💡 Règles pour les IPs fixes:${NC}"
+            echo -e "  ${YELLOW}•${NC} Utilisez des paires d'IPs (ex: .4/.5, .8/.9, .12/.13...)"
+            echo -e "  ${YELLOW}•${NC} Évitez .0, .1, .2, .255"
+            echo ""
 
-            if [[ ! $FIXED_IP =~ ^10\.8\.0\.[0-9]+$ ]]; then
-                echo -e "${RED}❌ IP invalide (format: 10.8.0.X)${NC}"
-                return
-            fi
+            while true; do
+                read -p "Adresse IP (ex: 10.8.0.4): " FIXED_IP
 
-            # Vérifier si l'IP est déjà utilisée par un autre utilisateur
-            for ccd_file in $CCD_DIR/*; do
-                if [[ -f "$ccd_file" ]]; then
-                    OTHER_CLIENT=$(basename $ccd_file)
-                    if [[ "$OTHER_CLIENT" != "$CLIENT_NAME" ]]; then
-                        OTHER_IP=$(grep "ifconfig-push" "$ccd_file" | awk '{print $2}')
-                        if [[ "$OTHER_IP" == "$FIXED_IP" ]]; then
-                            echo -e "${RED}❌ Cette IP est déjà utilisée par '$OTHER_CLIENT'${NC}"
-                            return
-                        fi
+                if [[ ! $FIXED_IP =~ ^10\.8\.0\.[0-9]+$ ]]; then
+                    echo -e "${RED}❌ Format invalide (attendu: 10.8.0.X)${NC}"
+                    read -p "Réessayer ? (o/N): " -n 1 -r RETRY
+                    echo ""
+                    if [[ ! $RETRY =~ ^[Oo]$ ]]; then
+                        return
                     fi
+                    continue
+                fi
+
+                # Vérifier la validité avec la nouvelle fonction
+                result=$(check_ip_validity "$FIXED_IP" "$CLIENT_NAME")
+                status=$(echo "$result" | cut -d':' -f1)
+
+                case $status in
+                    "RESERVED")
+                        echo -e "${RED}❌ IP réservée (.0, .1, .2, .255)${NC}"
+                        ;;
+                    "USED_BY")
+                        other_client=$(echo "$result" | cut -d':' -f2)
+                        usage_type=$(echo "$result" | cut -d':' -f3)
+                        if [[ "$usage_type" == "CLIENT" ]]; then
+                            echo -e "${RED}❌ IP déjà utilisée par '$other_client'${NC}"
+                        else
+                            echo -e "${RED}❌ IP est le peer de '$other_client'${NC}"
+                        fi
+                        ;;
+                    "PEER_CONFLICT")
+                        other_client=$(echo "$result" | cut -d':' -f2)
+                        echo -e "${RED}❌ Conflit de peer avec '$other_client'${NC}"
+                        ;;
+                    "OK")
+                        peer_ip=$(echo "$result" | cut -d':' -f2)
+                        echo "ifconfig-push $FIXED_IP $peer_ip" > $CCD_DIR/$CLIENT_NAME
+                        echo -e "${GREEN}✅ IP fixe $FIXED_IP (peer: $peer_ip) assignée à $CLIENT_NAME${NC}"
+                        echo -e "${YELLOW}⚠️  Redémarrez OpenVPN pour appliquer (option 7)${NC}"
+                        return
+                        ;;
+                esac
+
+                read -p "Réessayer ? (o/N): " -n 1 -r RETRY
+                echo ""
+                if [[ ! $RETRY =~ ^[Oo]$ ]]; then
+                    return
                 fi
             done
-
-            IFS='.' read -r -a ip_parts <<< "$FIXED_IP"
-            last_octet=${ip_parts[3]}
-            peer_octet=$((last_octet - 1))
-            if [[ $peer_octet -lt 1 ]]; then
-                peer_octet=$((last_octet + 1))
-            fi
-            peer_ip="${ip_parts[0]}.${ip_parts[1]}.${ip_parts[2]}.$peer_octet"
-
-            echo "ifconfig-push $FIXED_IP $peer_ip" > $CCD_DIR/$CLIENT_NAME
-
-            echo -e "${GREEN}✅ IP fixe $FIXED_IP assignée à $CLIENT_NAME${NC}"
-            echo -e "${YELLOW}⚠️  Redémarrez OpenVPN pour appliquer (option 8)${NC}"
             ;;
         2)
             if [[ $fixed_count -eq 0 ]]; then
@@ -723,40 +836,53 @@ manage_fixed_ips() {
             CLIENT_NAME=${FIXED_IP_USERS[$USER_NUM]}
 
             OLD_IP=$(grep "ifconfig-push" "$CCD_DIR/$CLIENT_NAME" | awk '{print $2}')
-            echo -e "${CYAN}IP actuelle de $CLIENT_NAME: $OLD_IP${NC}"
-            read -p "Nouvelle IP (ex: 10.8.0.100): " FIXED_IP
+            OLD_PEER=$(grep "ifconfig-push" "$CCD_DIR/$CLIENT_NAME" | awk '{print $3}')
+            echo -e "${CYAN}IP actuelle de $CLIENT_NAME: $OLD_IP (peer: $OLD_PEER)${NC}"
+            echo ""
 
-            if [[ ! $FIXED_IP =~ ^10\.8\.0\.[0-9]+$ ]]; then
-                echo -e "${RED}❌ IP invalide (format: 10.8.0.X)${NC}"
-                return
-            fi
+            while true; do
+                read -p "Nouvelle IP (ex: 10.8.0.4): " FIXED_IP
 
-            # Vérifier si l'IP est déjà utilisée par un autre utilisateur
-            for ccd_file in $CCD_DIR/*; do
-                if [[ -f "$ccd_file" ]]; then
-                    OTHER_CLIENT=$(basename $ccd_file)
-                    if [[ "$OTHER_CLIENT" != "$CLIENT_NAME" ]]; then
-                        OTHER_IP=$(grep "ifconfig-push" "$ccd_file" | awk '{print $2}')
-                        if [[ "$OTHER_IP" == "$FIXED_IP" ]]; then
-                            echo -e "${RED}❌ Cette IP est déjà utilisée par '$OTHER_CLIENT'${NC}"
-                            return
-                        fi
+                if [[ ! $FIXED_IP =~ ^10\.8\.0\.[0-9]+$ ]]; then
+                    echo -e "${RED}❌ Format invalide${NC}"
+                    read -p "Réessayer ? (o/N): " -n 1 -r RETRY
+                    echo ""
+                    if [[ ! $RETRY =~ ^[Oo]$ ]]; then
+                        return
                     fi
+                    continue
+                fi
+
+                result=$(check_ip_validity "$FIXED_IP" "$CLIENT_NAME")
+                status=$(echo "$result" | cut -d':' -f1)
+
+                case $status in
+                    "RESERVED")
+                        echo -e "${RED}❌ IP réservée${NC}"
+                        ;;
+                    "USED_BY")
+                        other_client=$(echo "$result" | cut -d':' -f2)
+                        echo -e "${RED}❌ IP utilisée par '$other_client'${NC}"
+                        ;;
+                    "PEER_CONFLICT")
+                        other_client=$(echo "$result" | cut -d':' -f2)
+                        echo -e "${RED}❌ Conflit de peer avec '$other_client'${NC}"
+                        ;;
+                    "OK")
+                        peer_ip=$(echo "$result" | cut -d':' -f2)
+                        echo "ifconfig-push $FIXED_IP $peer_ip" > $CCD_DIR/$CLIENT_NAME
+                        echo -e "${GREEN}✅ IP modifiée pour $CLIENT_NAME: $OLD_IP → $FIXED_IP (peer: $peer_ip)${NC}"
+                        echo -e "${YELLOW}⚠️  Redémarrez OpenVPN pour appliquer (option 7)${NC}"
+                        return
+                        ;;
+                esac
+
+                read -p "Réessayer ? (o/N): " -n 1 -r RETRY
+                echo ""
+                if [[ ! $RETRY =~ ^[Oo]$ ]]; then
+                    return
                 fi
             done
-
-            IFS='.' read -r -a ip_parts <<< "$FIXED_IP"
-            last_octet=${ip_parts[3]}
-            peer_octet=$((last_octet - 1))
-            if [[ $peer_octet -lt 1 ]]; then
-                peer_octet=$((last_octet + 1))
-            fi
-            peer_ip="${ip_parts[0]}.${ip_parts[1]}.${ip_parts[2]}.$peer_octet"
-
-            echo "ifconfig-push $FIXED_IP $peer_ip" > $CCD_DIR/$CLIENT_NAME
-
-            echo -e "${GREEN}✅ IP modifiée pour $CLIENT_NAME: $OLD_IP → $FIXED_IP${NC}"
-            echo -e "${YELLOW}⚠️  Redémarrez OpenVPN pour appliquer (option 8)${NC}"
             ;;
         3)
             if [[ $fixed_count -eq 0 ]]; then
@@ -780,10 +906,11 @@ manage_fixed_ips() {
             CLIENT_NAME=${FIXED_IP_USERS[$USER_NUM]}
 
             OLD_IP=$(grep "ifconfig-push" "$CCD_DIR/$CLIENT_NAME" | awk '{print $2}')
+            OLD_PEER=$(grep "ifconfig-push" "$CCD_DIR/$CLIENT_NAME" | awk '{print $3}')
             rm -f $CCD_DIR/$CLIENT_NAME
 
-            echo -e "${GREEN}✅ IP fixe $OLD_IP supprimée pour $CLIENT_NAME${NC}"
-            echo -e "${YELLOW}⚠️  Redémarrez OpenVPN pour appliquer (option 8)${NC}"
+            echo -e "${GREEN}✅ IP fixe $OLD_IP/$OLD_PEER supprimée pour $CLIENT_NAME${NC}"
+            echo -e "${YELLOW}⚠️  Redémarrez OpenVPN pour appliquer (option 7)${NC}"
             ;;
         0)
             return
