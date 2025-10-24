@@ -130,10 +130,17 @@ show_connected_users() {
 
     local CONNECTED=0
 
+    # Stocker le contenu du fichier de statut pour éviter de le lire plusieurs fois
+    local LOG_CONTENT
+    LOG_CONTENT=$(cat "$OPENVPN_DIR/openvpn-status.log")
+
     while IFS=',' read -r name real_addr bytes_recv bytes_sent connected_since; do
+        # On ne traite que les lignes qui sont dans la CLIENT LIST
         if [[ "$name" != "Common Name" && "$name" != "ROUTING TABLE" && ! -z "$name" ]]; then
-            # Extraire IP VPN de la table de routage
-            vpn_ip=$(grep "^$name," "$OPENVPN_DIR/openvpn-status.log" | grep -A 100 "ROUTING TABLE" | grep "^[0-9]" | head -1 | cut -d',' -f1)
+
+            # Correction de la logique : Extraire l'IP VPN de la table de routage
+            # On cherche le Common Name ($name) dans la section ROUTING TABLE
+            vpn_ip=$(echo "$LOG_CONTENT" | grep -A 100 "ROUTING TABLE" | grep "$name," | head -1 | cut -d',' -f1)
 
             # Formater la date
             connect_time=$(echo $connected_since | cut -d' ' -f1-2)
@@ -141,12 +148,12 @@ show_connected_users() {
             printf "%-20s %-15s %-25s %-15s\n" "$name" "${vpn_ip:-N/A}" "$real_addr" "$connect_time"
             ((CONNECTED++))
         fi
-    done < <(sed -n '/^Common Name,Real Address/,/^ROUTING TABLE/p' $OPENVPN_DIR/openvpn-status.log | grep -v "^ROUTING TABLE" | grep -v "^Common Name")
+    done < <(echo "$LOG_CONTENT" | sed -n '/^Common Name,Real Address/,/^ROUTING TABLE/p' | grep -v "^ROUTING TABLE" | grep -v "^Common Name")
 
     echo -e "${BLUE}═══════════════════════════════════════════════════════════${NC}"
 
     if [[ $CONNECTED -eq 0 ]]; then
-        echo -e "${YELLOW}⚠️  Aucun utilisateur connecté actuellement${NC}"
+        echo -e "${YELLOW}⚠️  Aucun utilisateur connecté actuellement${NC}"
     else
         echo -e "${GREEN}✅ $CONNECTED utilisateur(s) connecté(s)${NC}"
     fi
